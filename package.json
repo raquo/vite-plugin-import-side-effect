@@ -1,0 +1,35 @@
+{
+  "name": "@raquo/vite-plugin-import-side-effect",
+  "version": "0.1.0",
+  "description": "Vite plugin to import files for side effects only in Scala.js",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/raquo/vite-plugin-import-side-effect.git"
+  },
+  "keywords": [
+    "vite",
+    "vite-plugin",
+    "scala",
+    "scala-js"
+  ],
+  "author": {
+    "name": "Nikita Gazarov",
+    "url": "https://github.com/raquo"
+  },
+  "license": "MIT",
+  "funding": [
+    {
+      "type": "github",
+      "url": "https://github.com/sponsors/raquo"
+    }
+  ],
+  "homepage": "https://github.com/raquo/vite-plugin-side-effect",
+  "dependencies": {
+    "magic-string": "^0.30.5"
+  }
+}
