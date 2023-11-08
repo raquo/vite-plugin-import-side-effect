@@ -6,81 +6,175 @@ This is especially relevant to importing CSS resources, because if we do `JSImpo
 
 On the other hand, if we said `import "foo.css"`, Vite production build would only include the CSS in the CSS file, it would not add it to the JS bundle.
 
-At the moment, Scala.js can't emit `import "foo.css"`, so this plugin does _unspeakable things_ to simulate that. **This plugin is a stopgap / proof of concept, there are ways to make it better – read on.**
+At the moment, Scala.js can't emit `import "foo.css"`, so this plugin does some unsightly things to simulate that. It's an improvement from _unspeakable things_ of v0.1 though.
 
 
 ## Usage
 
-Add this Scala file to your Scala.js project:
+**This documentation is for v0.2.0 of this plugin**. v0.1.0 used a different approach, you can read about it [here](https://github.com/raquo/vite-plugin-import-side-effect/tree/900d11710735f4457dae7608372f3b9dda7b95fd) (and then upgrade).
+
+```
+npm i -D @raquo/vite-plugin-import-side-effect@0.2.0
+```
+
+**Without** this plugin, you would normally import CSS somehow like this in Scala.js:
 
 ```scala
-object JSImportSideEffect {
+/** Marks an import as "used" in Scala.js to prevent dead code elimination */
+def useImport(obj: js.Object): Unit = ()
 
-  @js.native
-  @JSGlobal("importSideEffect_3DfPjKW0ZYyY")
-  def apply(moduleId: String): Unit = js.native
-}
+@JSImport("highlight.js/styles/dark.min.css", JSImport.Namespace)
+@js.native private object Stylesheet extends js.Object
+
+useImport(Stylesheet)
 ```
 
-Install this plugin:
+This works, but causes the double-loading of CSS mentioned above, as well as warnings from Vite which will become errors eventually.
 
-```
-npm i -D @raquo/vite-plugin-import-side-effect
-```
-
-Add this plugin to your vite.config.js (IN THIS ORDER, if used together):
+This plugin supports this pattern, just add it to your Vite config:
 
 ```js
 import importSideEffectPlugin from "@raquo/vite-plugin-import-side-effect";
 
-// Add to the list of plugins:
+// Add this to the list of Vite plugins:
 importSideEffectPlugin({
-  importFnName: "importSideEffect_3DfPjKW0ZYyY"
+  defNames: [], // see "Compact syntax" below
+  rewriteModuleIds: ['**/*.css', '**/*.less'],
+  verbose: true
 })
 ```
 
-Also, install my [glob-resolver]("https://github.com/raquo/vite-plugin-glob-resolver") plugin, unless you want to manually specify long paths.
+This will rewrite all imports that match those glob patterns from `import * as unused from "moduleId"` to simply `import "moduleId"`.
 
-**Make sure to read the caveats below.**
+The `verbose` option will print out the affected `moduleId`-s.
 
-
-## Unspeakable Things
-
-When you call `JSImportSideEffect("foo.css")` in your Scala.js code, Scala.js outputs the following JS code: `importSideEffect_3DfPjKW0ZYyY("foo.css")`.
-
-The plugin works by finding `importSideEffect_3DfPjKW0ZYyY("foo.css")` in your JS code, commenting it out by prepending `// `, and putting an `import "foo.css"` import statement at the top of the module, prior to any other Scala.js-produced import statements. This is done using [magic-string](https://github.com/rich-harris/magic-string#readme), so the source maps remain valid.
-
-Therefore, our `JSGlobal` name must match the `importFnName`, and must be a unique string in your codebase. You can provide your own, if you don't like `importSideEffect_3DfPjKW0ZYyY` for some reason.
-
-So, _everything is fine_. 
+Technically, this transformation is applied to all .js files that aren't in `node_modules`, but the way our import matching is implemented, in practice it only works on JS files outputted by Scala.js. Which is as intended, non-Scala.js files don't need this transformation, as you can trivially write `import "foo.css"` in them.
 
 
-### Caveats
+### Compact syntax
 
-* Avoid injecting untrusted code into your JS files, or generating untrusted JS code. This plugin will find and replace `importSideEffect_3DfPjKW0ZYyY("foo")` in your .js files, **even if that pattern is found in string literals or comments**. (Note: Comments in Scala files are not output to JS). Beware of code generation that works on untrusted input and outputs .scala or .js files, including sbt-buildinfo plugin if it outputs any untrusted data. Failure to do that can allow an attacker to inject an `import "foo"` statement into your JS code.
+I am so very annoyed by call-site boilerplate. I don't want to repeat `JSImport.Namespace`, I don't want to import or re-define `useImport` every time I want to import CSS. So, I use this plugin in the following way:
 
-  * **This can be improved – see TODO section below. This PoC is working well for me, but PRs to help with those issues are welcome.**
+```scala
+@JSImport("highlight.js/styles/dark.min.css")
+@js.native private def importStyle(): Unit = js.native
 
-  * For now, if this is a real concern to you, I recommend changing the `importSideEffect_3DfPjKW0ZYyY` string to something different.
+importStyle() // Marks an import as "used" in Scala.js to prevent dead code elimination
+```
 
-* Put `importSideEffectPlugin` prior to any other plugin that could alter Scala.js output in a way that could make our transformations unsafe.
+To do this, you need to update the plugin's options in vite.config.js:
 
-* The plugin isn't suitable for library authors who need to import CSS files, only for end users building their applications. But, this can be improved.
+```js
+importSideEffectPlugin({
+  defNames: ["importStyle"], // Must match the `def` name you defined above !!!
+  rewriteModuleIds: ['**/*.css', '**/*.less'],
+  verbose: true
+})
+```
+
+Note: If you specify `defNames` like this, you can keep using the standard Scala.js importing syntax, this just unlocks alternative compact syntax.
+
+Here, we are abusing Scala.js syntax intended for a different purpose to shave off some boilerplate. Up to you if you want to do this, it's completely optional.
+
+How it works: our `JSImport` above is intended to import functions from JS modules, and will output something like this:
+
+```js
+import * as foo from "highlight.js/styles/dark.min.css"
+foo.importStyle() // Name of the method
+```
+
+`importStyle` is just a name I made up, it does not actually exist anywhere. But our code is calling it, so we can't just remove `foo`. So this plugin rewrites this import to something like this instead:
+
+```js
+const foo = {foo: function () {}}
+import "highlight.js/styles/dark.min.css"
+```
+
+And this way, the `foo.importStyle()` call generated by Scala.js does not fail at runtime (and doesn't do anything).
+
+For this to be safe, you should choose a name that does not actually exist on the files that you import. Or to be more precise, it's even ok if it exists, as long as nothing in your code actually wants to import it, because you know, it won't be able to. CSS is imported as a string by default, so pretty much any name is safe.
+
+If you need to make multiple imports in the same Scala file, you can change the def name to avoid the name conflict, while providing "importStyle` as an alias (acting like a @JSName, essentially) in the second argument to `JSImport`. This way you don't need to add more `defName`-s to your vite config:
+
+```scala
+@JSImport("highlight.js/styles/light.min.css", "importStyle")
+@js.native private def importLightStyle(): Unit = js.native
+
+importLightStyle()
+
+@JSImport("highlight.js/styles/dark.min.css", "importStyle")
+@js.native private def importDarkStyle(): Unit = js.native
+
+importDarkStyle()
+```
+
+vite.config.js:
+
+```js
+importSideEffectPlugin({
+  defNames: ["importStyle"], // Still the same
+  rewriteModuleIds: ['**/*.css', '**/*.less'],
+  verbose: true
+})
+```
+
+### Other ways to achieve more compact syntax
+
+If you don't want to abuse Scala.js syntax but still want more compact syntax, you have a shared trait that your components extend, you can do this:
+
+```scala
+trait Component {
+
+  // Marks an import as "used" in Scala.js to prevent dead code elimination
+  protected def useImport(obj: js.Any): Unit = ()
+  
+  protected def Stylesheet: js.Any
+  
+  useImport(Stylesheet)
+}
+```
+
+and then do this in your components:
+
+```scala
+object MyComponent extends Component {
+
+  @JSImport("/path/to/MyComponent.css", JSImport.Namespace)
+  @js.native private object Stylesheet extends js.Object
+}
+```
+
+If you do this, then you can keep the `defNames` array empty in the plugin's vite config.
 
 
-## TODO
+## For Scala.js library authors
 
-* An alternative, potentially less horrifying, way to achieve the desired effect is to replace Scala.js-generated `import * as unused from "foo.css"` imports with `import "foo.css"`, however this `unused` is a random identifier, and I don't know how to tell which of them are actually unused in the code. Can we just check for the occurrences of those `unused` strings in the same module, and if not found, assume that they're not used?
+If you are writing a Scala.js library to be used by other applications, and it needs to import CSS, you shouldn't (and can't, really) depend on this plugin, because this plugin runs at the bundle building time, and you're not distributing a JS bundle, you're distributing SJSIR files. It's the end-users who are responsible for bundling their applications. Some aren't even using Vite.
 
-* Currently we allow to rewrite any imports. Since this plugin is really only beneficial for CSS files, perhaps we should limit the imports to `*.css` by default, prevent URL imports (are those allowed in Vite?), etc.  
+I guess you have two options to include CSS:
+- Tell the end user to import the necessary CSS themselves
+- Use the normal Scala.js import (without the `importStyle` hack). I'm actually not sure if this would work.
 
-* Currently we apply this transformation to all `.js` files that aren't in `node_modules`. We only need to apply it to files produced by scala.js, but I'm not sure how to tell which ones those are.
-
-* I'm hoping that the need for this plugin will eventually be eliminated one way or another.
+In both cases, it's up to the users to make sure that their bundler can import your CSS. If their bundler is Vite, they'll need this plugin.
 
 
-## Related
+## Alternatives
+
+If you want to use Vite, want to import CSS, but don't want to use this plugin, you can create a small JS file, write `import "foo.css"` in there (one or many), and then import that JS file to Scala.js, or import it into your `index.js` entry point using normal means.
+
+You can also [@import](https://developer.mozilla.org/en-US/docs/Web/CSS/@import) one CSS file from another, instead of importing all CSS files into a JS file.
+
+I used to do this, but it gets annoying when you have one CSS / LESS file per component.
+
+
+## Import CSS from relative paths
+
+You may want to import CSS from relative paths like `@JSImport("./MyComponent.css")`, but out of the box, you can't. See [@raquo/vite-plugin-glob-resolver](https://github.com/raquo/vite-plugin-glob-resolver), you can use it together with this plugin.
+
+
+## Resources
  - https://discord.com/channels/632150470000902164/635668814956068864/1161984220814643241
+ - https://discord.com/channels/1020225759610163220/1020225760075718669/1171409017021673575
  - https://vitejs.dev/guide/features.html#disabling-css-injection-into-the-page
  - https://github.com/vitejs/vite/pull/10762
  - https://github.com/vitejs/vite/issues/3246
