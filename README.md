@@ -140,7 +140,7 @@ and then do this in your components:
 object MyComponent extends Component {
 
   @JSImport("/path/to/MyComponent.css", JSImport.Namespace)
-  @js.native private object Stylesheet extends js.Object
+  @js.native protected object Stylesheet extends js.Object
 }
 ```
 
